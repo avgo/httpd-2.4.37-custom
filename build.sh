@@ -46,6 +46,9 @@ test1() {
 		-e "s@%APACHE_PORT%@${apache_port}@g" \
 		-e "s@%APACHE_SERVER_ROOT%@${apache_prefix}/etc/httpd@g" \
 		"httpd.conf.in" > "${apache_prefix}/etc/httpd/conf/httpd.conf"
+
+	sed	-e "s@%INSTALL_TIME%@$(date +"%d.%m.%Y %T")@g" \
+		"index.template.html" > "${apache_prefix}/var/www/html/index.html"
 }
 
 main "$@"
