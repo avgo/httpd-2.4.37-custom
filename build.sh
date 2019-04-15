@@ -24,7 +24,7 @@ test1() {
 	cd "${script_dir}" || return 1
 	make distclean
 	rm -rf "${apache_prefix}"
-	./configure --prefix="${apache_prefix}" &&
+	./configure --prefix="${apache_prefix}" --enable-cgi &&
 	make &&
 	make install
 
@@ -49,6 +49,8 @@ test1() {
 
 	sed	-e "s@%INSTALL_TIME%@$(date +"%d.%m.%Y %T")@g" \
 		"index.template.html" > "${apache_prefix}/var/www/html/index.html"
+
+	cp -vf "index.pl" "${apache_prefix}/var/www/html"
 }
 
 main "$@"

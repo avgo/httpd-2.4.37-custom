@@ -10,7 +10,7 @@ ServerName apache-test
 Listen %APACHE_PORT%
 
 LoadModule authz_core_module    modules/mod_authz_core.so
-# LoadModule cgi_module           modules/mod_cgi.so
+LoadModule cgi_module           modules/mod_cgi.so
 LoadModule dir_module           modules/mod_dir.so
 LoadModule mime_module          modules/mod_mime.so
 LoadModule unixd_module         modules/mod_unixd.so
