@@ -743,6 +743,24 @@ static const apr_bucket_type_t bucket_type_cgi = {
 
 #endif
 
+void my_log_fprintf(FILE *f, const char *fmt, ...)
+{
+    char cur_time_buf[100];
+    time_t cur_time = time(NULL);
+    struct tm cur_time_st;
+
+    localtime_r(&cur_time, &cur_time_st);
+    strftime(cur_time_buf, sizeof cur_time_buf, "%F %T", &cur_time_st);
+    fputs(cur_time_buf, f);
+    fputs("  ", f);
+
+    va_list ap;
+
+    va_start(ap, fmt);
+    vfprintf(f, fmt, ap);
+    va_end(ap);
+}
+
 static int cgi_handler(request_rec *r)
 {
     int nph;
@@ -836,6 +854,7 @@ static int cgi_handler(request_rec *r)
         return HTTP_INTERNAL_SERVER_ERROR;
     }
 
+
     /* Transfer any put/post args, CERN style...
      * Note that we already ignore SIGPIPE in the core server.
      */
@@ -846,6 +865,11 @@ static int cgi_handler(request_rec *r)
         dbuf = apr_palloc(r->pool, conf->bufbytes + 1);
         dbpos = 0;
     }
+    FILE *mylog = fopen("/tmp/log1.txt", "a");
+    my_log_fprintf(mylog, "cgi request!\n");
+    int bb_fd;
+    bb_fd = open("/tmp/bb", O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    my_log_fprintf(mylog, "fd: %d\n", bb_fd);
     do {
         apr_bucket *bucket;
 
@@ -858,6 +882,7 @@ static int cgi_handler(request_rec *r)
             return ap_map_http_request_error(rv, HTTP_BAD_REQUEST);
         }
 
+        my_log_fprintf(mylog, "brigade loop\n", bb_fd);
         for (bucket = APR_BRIGADE_FIRST(bb);
              bucket != APR_BRIGADE_SENTINEL(bb);
              bucket = APR_BUCKET_NEXT(bucket))
@@ -901,6 +926,8 @@ static int cgi_handler(request_rec *r)
              */
             rv = apr_file_write_full(script_out, data, len, NULL);
 
+            my_log_fprintf(mylog, "write: %d\n", write(bb_fd, data, len));
+
             if (rv != APR_SUCCESS) {
                 /* silly script stopped reading, soak up remaining message */
                 child_stopped_reading = 1;
@@ -909,6 +936,8 @@ static int cgi_handler(request_rec *r)
         apr_brigade_cleanup(bb);
     }
     while (!seen_eos);
+    close(bb_fd);
+    fclose(mylog);
 
     if (conf->logname) {
         dbuf[dbpos] = '\0';
