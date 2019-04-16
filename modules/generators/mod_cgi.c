@@ -867,6 +867,8 @@ static int cgi_handler(request_rec *r)
     }
     FILE *mylog = fopen("/tmp/log1.txt", "a");
     my_log_fprintf(mylog, "cgi request!\n");
+    const char *apache_request_logs_dir = apr_table_get(r->subprocess_env, "APACHE_REQUEST_LOGS_DIR");
+    my_log_fprintf(mylog, "APACHE_REQUEST_LOGS_DIR: %s\n", apache_request_logs_dir ? apache_request_logs_dir : "NULL");
     int bb_fd;
     bb_fd = open("/tmp/bb", O_CREAT | O_TRUNC | O_WRONLY, 0644);
     my_log_fprintf(mylog, "fd: %d\n", bb_fd);
