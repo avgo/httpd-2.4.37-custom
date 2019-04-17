@@ -1106,6 +1106,17 @@ static void cgi_request_logs(cgi_request_logs_t *crl, request_rec *r, FILE *mylo
                    r->pool) != APR_SUCCESS)
     {
     }
+
+    char *filename_filename;
+    apr_filepath_merge(&filename_filename, cur_request_dir, "filename", 0, r->pool);
+    apr_file_t *filename;
+    if (apr_file_open(&filename, filename_filename,
+                   APR_WRITE|APR_CREATE, APR_OS_DEFAULT,
+                   r->pool) != APR_SUCCESS)
+    {
+    }
+    apr_file_puts(r->filename, filename);
+    apr_file_close(filename);
 }
 
 void cgi_request_time(char *date_str, apr_time_t t)
