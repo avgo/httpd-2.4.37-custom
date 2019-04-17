@@ -869,9 +869,6 @@ static int cgi_handler(request_rec *r)
     my_log_fprintf(mylog, "cgi request!\n");
     const char *apache_request_logs_dir = apr_table_get(r->subprocess_env, "APACHE_REQUEST_LOGS_DIR");
     my_log_fprintf(mylog, "APACHE_REQUEST_LOGS_DIR: %s\n", apache_request_logs_dir ? apache_request_logs_dir : "NULL");
-    int bb_fd;
-    bb_fd = open("/tmp/bb", O_CREAT | O_TRUNC | O_WRONLY, 0644);
-    my_log_fprintf(mylog, "fd: %d\n", bb_fd);
     do {
         apr_bucket *bucket;
 
@@ -884,7 +881,6 @@ static int cgi_handler(request_rec *r)
             return ap_map_http_request_error(rv, HTTP_BAD_REQUEST);
         }
 
-        my_log_fprintf(mylog, "brigade loop\n", bb_fd);
         for (bucket = APR_BRIGADE_FIRST(bb);
              bucket != APR_BRIGADE_SENTINEL(bb);
              bucket = APR_BUCKET_NEXT(bucket))
@@ -928,8 +924,6 @@ static int cgi_handler(request_rec *r)
              */
             rv = apr_file_write_full(script_out, data, len, NULL);
 
-            my_log_fprintf(mylog, "write: %d\n", write(bb_fd, data, len));
-
             if (rv != APR_SUCCESS) {
                 /* silly script stopped reading, soak up remaining message */
                 child_stopped_reading = 1;
@@ -938,7 +932,6 @@ static int cgi_handler(request_rec *r)
         apr_brigade_cleanup(bb);
     }
     while (!seen_eos);
-    close(bb_fd);
     fclose(mylog);
 
     if (conf->logname) {
