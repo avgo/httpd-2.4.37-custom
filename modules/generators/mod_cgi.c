@@ -66,6 +66,15 @@ static APR_OPTIONAL_FN_TYPE(ap_ssi_get_tag_and_value) *cgi_pfn_gtv;
 static APR_OPTIONAL_FN_TYPE(ap_ssi_parse_string) *cgi_pfn_ps;
 static APR_OPTIONAL_FN_TYPE(ap_cgi_build_command) *cgi_build_command;
 
+typedef struct cgi_request_logs cgi_request_logs_t;
+
+struct cgi_request_logs {
+        apr_file_t *cgi_err;
+};
+
+static void cgi_request_logs(cgi_request_logs_t *crl, request_rec *r, FILE *mylog);
+void cgi_request_time(char *date_str, apr_time_t t);
+
 /* Read and discard the data in the brigade produced by a CGI script */
 static void discard_script_output(apr_bucket_brigade *bb);
 
@@ -200,7 +209,8 @@ static int log_scripterror(request_rec *r, cgi_server_conf * conf, int ret,
 
 /* Soak up stderr from a script and redirect it to the error log.
  */
-static apr_status_t log_script_err(request_rec *r, apr_file_t *script_err)
+static apr_status_t log_script_err(request_rec *r,
+                apr_file_t *script_err, cgi_request_logs_t *crl)
 {
     char argsbuffer[HUGE_STRING_LEN];
     char *newline;
@@ -209,11 +219,7 @@ static apr_status_t log_script_err(request_rec *r, apr_file_t *script_err)
 
     while ((rv = apr_file_gets(argsbuffer, HUGE_STRING_LEN,
                                script_err)) == APR_SUCCESS) {
-        newline = strchr(argsbuffer, '\n');
-        if (newline) {
-            *newline = '\0';
-        }
-        log_scripterror(r, conf, r->status, 0, APLOGNO(01215), argsbuffer);
+        apr_file_puts(argsbuffer, crl->cgi_err);
     }
 
     return rv;
@@ -221,7 +227,7 @@ static apr_status_t log_script_err(request_rec *r, apr_file_t *script_err)
 
 static int log_script(request_rec *r, cgi_server_conf * conf, int ret,
                       char *dbuf, const char *sbuf, apr_bucket_brigade *bb,
-                      apr_file_t *script_err)
+                      apr_file_t *script_err, cgi_request_logs_t *crl)
 {
     const apr_array_header_t *hdrs_arr = apr_table_elts(r->headers_in);
     const apr_table_entry_t *hdrs = (const apr_table_entry_t *) hdrs_arr->elts;
@@ -246,7 +252,7 @@ static int log_script(request_rec *r, cgi_server_conf * conf, int ret,
                        r->pool) != APR_SUCCESS)) {
         /* Soak up script output */
         discard_script_output(bb);
-        log_script_err(r, script_err);
+        log_script_err(r, script_err, crl);
         return ret;
     }
 
@@ -566,13 +572,15 @@ static const apr_bucket_type_t bucket_type_cgi;
 struct cgi_bucket_data {
     apr_pollset_t *pollset;
     request_rec *r;
+    cgi_request_logs_t *crl;
 };
 
 /* Create a CGI bucket using pipes from script stdout 'out'
  * and stderr 'err', for request 'r'. */
 static apr_bucket *cgi_bucket_create(request_rec *r,
                                      apr_file_t *out, apr_file_t *err,
-                                     apr_bucket_alloc_t *list)
+                                     apr_bucket_alloc_t *list,
+                                     cgi_request_logs_t *crl)
 {
     apr_bucket *b = apr_bucket_alloc(sizeof(*b), list);
     apr_status_t rv;
@@ -615,6 +623,7 @@ static apr_bucket *cgi_bucket_create(request_rec *r,
         return NULL;
     }
 
+    data->crl = crl;
     data->r = r;
     b->data = data;
     return b;
@@ -720,7 +729,7 @@ static apr_status_t cgi_bucket_read(apr_bucket *b, const char **str,
                 gotdata = 1;
             } else {
                 /* stderr */
-                apr_status_t rv2 = log_script_err(data->r, results[0].desc.f);
+                apr_status_t rv2 = log_script_err(data->r, results[0].desc.f, data->crl);
                 if (APR_STATUS_IS_EOF(rv2)) {
                     apr_pollset_remove(data->pollset, &results[0]);
                 }
@@ -865,10 +874,15 @@ static int cgi_handler(request_rec *r)
         dbuf = apr_palloc(r->pool, conf->bufbytes + 1);
         dbpos = 0;
     }
+
     FILE *mylog = fopen("/tmp/log1.txt", "a");
+
     my_log_fprintf(mylog, "cgi request!\n");
-    const char *apache_request_logs_dir = apr_table_get(r->subprocess_env, "APACHE_REQUEST_LOGS_DIR");
-    my_log_fprintf(mylog, "APACHE_REQUEST_LOGS_DIR: %s\n", apache_request_logs_dir ? apache_request_logs_dir : "NULL");
+
+    cgi_request_logs_t crl;
+
+    cgi_request_logs(&crl, r, mylog);
+
     do {
         apr_bucket *bucket;
 
@@ -947,7 +961,7 @@ static int cgi_handler(request_rec *r)
     apr_file_pipe_timeout_set(script_in, 0);
     apr_file_pipe_timeout_set(script_err, 0);
 
-    b = cgi_bucket_create(r, script_in, script_err, c->bucket_alloc);
+    b = cgi_bucket_create(r, script_in, script_err, c->bucket_alloc, &crl);
     if (b == NULL)
         return HTTP_INTERNAL_SERVER_ERROR;
 #else
@@ -966,7 +980,7 @@ static int cgi_handler(request_rec *r)
         if ((ret = ap_scan_script_header_err_brigade_ex(r, bb, sbuf,
                                                         APLOG_MODULE_INDEX)))
         {
-            ret = log_script(r, conf, ret, dbuf, sbuf, bb, script_err);
+            ret = log_script(r, conf, ret, dbuf, sbuf, bb, script_err, &crl);
 
             /*
              * ret could be HTTP_NOT_MODIFIED in the case that the CGI script
@@ -1005,7 +1019,7 @@ static int cgi_handler(request_rec *r)
             discard_script_output(bb);
             apr_brigade_destroy(bb);
             apr_file_pipe_timeout_set(script_err, r->server->timeout);
-            log_script_err(r, script_err);
+            log_script_err(r, script_err, &crl);
         }
 
         if (location && location[0] == '/' && r->status == 200) {
@@ -1056,12 +1070,84 @@ static int cgi_handler(request_rec *r)
      * reason */
     if (rv == APR_SUCCESS && !r->connection->aborted) {
         apr_file_pipe_timeout_set(script_err, r->server->timeout);
-        log_script_err(r, script_err);
+        log_script_err(r, script_err, &crl);
     }
 
+    apr_file_close(crl.cgi_err);
     apr_file_close(script_err);
 
     return OK;                      /* NOT r->status, even if it has changed. */
+}
+
+static void cgi_request_logs(cgi_request_logs_t *crl, request_rec *r, FILE *mylog)
+{
+    const char *apache_request_logs_dir = apr_table_get(r->subprocess_env, "APACHE_REQUEST_LOGS_DIR");
+
+    my_log_fprintf(mylog, "APACHE_REQUEST_LOGS_DIR: %s\n", apache_request_logs_dir ? apache_request_logs_dir : "NULL");
+
+    char time_now_str[50];
+
+    cgi_request_time(time_now_str, apr_time_now());
+
+    char *cur_request_dir;
+
+    apr_filepath_merge(&cur_request_dir, apache_request_logs_dir, time_now_str, 0, r->pool);
+
+    my_log_fprintf(mylog, "dir for new req: %s\n", cur_request_dir ? cur_request_dir : "NULL");
+
+    apr_dir_make(cur_request_dir, APR_UREAD | APR_UWRITE | APR_UEXECUTE | APR_GREAD | APR_GEXECUTE | APR_WREAD | APR_WEXECUTE, r->pool);
+
+    char *stderr_filename;
+
+    apr_filepath_merge(&stderr_filename, cur_request_dir, "stderr.txt", 0, r->pool);
+
+    if (apr_file_open(&crl->cgi_err, stderr_filename,
+                   APR_WRITE|APR_CREATE, APR_OS_DEFAULT,
+                   r->pool) != APR_SUCCESS)
+    {
+    }
+}
+
+void cgi_request_time(char *date_str, apr_time_t t)
+{
+    apr_time_exp_t xt;
+
+    apr_time_exp_lt(&xt, t);
+
+    int real_year = 1900 + xt.tm_year;
+    int real_month = xt.tm_mon + 1;
+
+    *date_str++ = real_year / 1000 + '0';
+    *date_str++ = real_year % 1000 / 100 + '0';
+    *date_str++ = real_year % 100 / 10 + '0';
+    *date_str++ = real_year % 10 + '0';
+    *date_str++ = '-';
+    *date_str++ = real_month / 10 + '0';
+    *date_str++ = real_month % 10 + '0';
+    *date_str++ = '-';
+    *date_str++ = xt.tm_mday / 10 + '0';
+    *date_str++ = xt.tm_mday % 10 + '0';
+    *date_str++ = '_';
+    *date_str++ = xt.tm_hour / 10 + '0';
+    *date_str++ = xt.tm_hour % 10 + '0';
+    *date_str++ = '-';
+    *date_str++ = xt.tm_min / 10 + '0';
+    *date_str++ = xt.tm_min % 10 + '0';
+    *date_str++ = '-';
+    *date_str++ = xt.tm_sec / 10 + '0';
+    *date_str++ = xt.tm_sec % 10 + '0';
+
+    int div;
+    int usec = (int)xt.tm_usec;
+
+    *date_str++ = '.';
+
+    for (div=100000; div>0; div=div/10) {
+        *date_str++ = usec / div + '0';
+        usec = usec % div;
+    }
+
+    *date_str++ = 0;
 }
 
 /*============================================================================
