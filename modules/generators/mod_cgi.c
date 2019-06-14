@@ -72,7 +72,8 @@ struct cgi_request_logs {
         apr_file_t *cgi_err;
 };
 
-static void cgi_request_logs(cgi_request_logs_t *crl, request_rec *r, FILE *mylog);
+static void cgi_request_logs(cgi_request_logs_t *crl, request_rec *r);
+static void cgi_request_logs_close(cgi_request_logs_t *crl);
 void cgi_request_time(char *date_str, apr_time_t t);
 
 /* Read and discard the data in the brigade produced by a CGI script */
@@ -212,6 +213,9 @@ static int log_scripterror(request_rec *r, cgi_server_conf * conf, int ret,
 static apr_status_t log_script_err(request_rec *r,
                 apr_file_t *script_err, cgi_request_logs_t *crl)
 {
+    if (crl->cgi_err == NULL)
+        return APR_SUCCESS;
+
     char argsbuffer[HUGE_STRING_LEN];
     char *newline;
     apr_status_t rv;
@@ -752,24 +756,6 @@ static const apr_bucket_type_t bucket_type_cgi = {
 
 #endif
 
-void my_log_fprintf(FILE *f, const char *fmt, ...)
-{
-    char cur_time_buf[100];
-    time_t cur_time = time(NULL);
-    struct tm cur_time_st;
-
-    localtime_r(&cur_time, &cur_time_st);
-    strftime(cur_time_buf, sizeof cur_time_buf, "%F %T", &cur_time_st);
-    fputs(cur_time_buf, f);
-    fputs("  ", f);
-
-    va_list ap;
-
-    va_start(ap, fmt);
-    vfprintf(f, fmt, ap);
-    va_end(ap);
-}
-
 static int cgi_handler(request_rec *r)
 {
     int nph;
@@ -875,13 +861,9 @@ static int cgi_handler(request_rec *r)
         dbpos = 0;
     }
 
-    FILE *mylog = fopen("/tmp/log1.txt", "a");
-
-    my_log_fprintf(mylog, "cgi request!\n");
-
     cgi_request_logs_t crl;
 
-    cgi_request_logs(&crl, r, mylog);
+    cgi_request_logs(&crl, r);
 
     do {
         apr_bucket *bucket;
@@ -946,7 +928,6 @@ static int cgi_handler(request_rec *r)
         apr_brigade_cleanup(bb);
     }
     while (!seen_eos);
-    fclose(mylog);
 
     if (conf->logname) {
         dbuf[dbpos] = '\0';
@@ -1073,17 +1054,21 @@ static int cgi_handler(request_rec *r)
         log_script_err(r, script_err, &crl);
     }
 
-    apr_file_close(crl.cgi_err);
+    cgi_request_logs_close(&crl);
     apr_file_close(script_err);
 
     return OK;                      /* NOT r->status, even if it has changed. */
 }
 
-static void cgi_request_logs(cgi_request_logs_t *crl, request_rec *r, FILE *mylog)
+static void cgi_request_logs(cgi_request_logs_t *crl, request_rec *r)
 {
     const char *apache_request_logs_dir = apr_table_get(r->subprocess_env, "APACHE_REQUEST_LOGS_DIR");
 
-    my_log_fprintf(mylog, "APACHE_REQUEST_LOGS_DIR: %s\n", apache_request_logs_dir ? apache_request_logs_dir : "NULL");
+    if (!apache_request_logs_dir) {
+        crl->cgi_err = NULL;
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "var apache_request_logs_dir not def");
+        return;
+    }
 
     char time_now_str[50];
 
@@ -1092,8 +1077,6 @@ static void cgi_request_logs(cgi_request_logs_t *crl, request_rec *r, FILE *mylo
     char *cur_request_dir;
 
     apr_filepath_merge(&cur_request_dir, apache_request_logs_dir, time_now_str, 0, r->pool);
-
-    my_log_fprintf(mylog, "dir for new req: %s\n", cur_request_dir ? cur_request_dir : "NULL");
 
     apr_dir_make(cur_request_dir, APR_UREAD | APR_UWRITE | APR_UEXECUTE | APR_GREAD | APR_GEXECUTE | APR_WREAD | APR_WEXECUTE, r->pool);
 
@@ -1117,6 +1100,12 @@ static void cgi_request_logs(cgi_request_logs_t *crl, request_rec *r, FILE *mylo
     }
     apr_file_puts(r->filename, filename);
     apr_file_close(filename);
+}
+
+static void cgi_request_logs_close(cgi_request_logs_t *crl)
+{
+    if (crl->cgi_err)
+        apr_file_close(crl->cgi_err);
 }
 
 void cgi_request_time(char *date_str, apr_time_t t)
