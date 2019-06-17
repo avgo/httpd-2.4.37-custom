@@ -69,11 +69,14 @@ static APR_OPTIONAL_FN_TYPE(ap_cgi_build_command) *cgi_build_command;
 typedef struct cgi_request_logs cgi_request_logs_t;
 
 struct cgi_request_logs {
+        char *cur_request_dir;
         apr_file_t *cgi_err;
         apr_file_t *post_data_out;
 };
 
-static void cgi_request_logs(cgi_request_logs_t *crl, request_rec *r);
+static void cgi_request_logs_1(cgi_request_logs_t *crl, request_rec *r);
+static void cgi_request_logs_2(cgi_request_logs_t *crl, request_rec *r, const char * const * env);
+static void cgi_request_logs_3(cgi_request_logs_t *crl, request_rec *r);
 static void cgi_request_logs_close(cgi_request_logs_t *crl);
 void cgi_request_time(char *date_str, apr_time_t t);
 
@@ -393,7 +396,8 @@ static apr_status_t run_cgi_child(apr_file_t **script_out,
                                   const char * const argv[],
                                   request_rec *r,
                                   apr_pool_t *p,
-                                  cgi_exec_info_t *e_info)
+                                  cgi_exec_info_t *e_info,
+                                  cgi_request_logs_t *crl)
 {
     const char * const *env;
     apr_procattr_t *procattr;
@@ -421,6 +425,8 @@ static apr_status_t run_cgi_child(apr_file_t **script_out,
 #endif
 
     env = (const char * const *)ap_create_environment(p, r->subprocess_env);
+
+    cgi_request_logs_2(crl, r, env);
 
 #ifdef DEBUG_CGI
     fprintf(dbg, "Environment: \n");
@@ -834,6 +840,10 @@ static int cgi_handler(request_rec *r)
     e_info.next        = NULL;
     e_info.addrspace   = 0;
 
+    cgi_request_logs_t crl;
+
+    cgi_request_logs_1(&crl, r);
+
     /* build the command line */
     if ((rv = cgi_build_command(&command, &argv, r, p, &e_info)) != APR_SUCCESS) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r, APLOGNO(01222)
@@ -844,7 +854,7 @@ static int cgi_handler(request_rec *r)
 
     /* run the script in its own process */
     if ((rv = run_cgi_child(&script_out, &script_in, &script_err,
-                            command, argv, r, p, &e_info)) != APR_SUCCESS) {
+                            command, argv, r, p, &e_info, &crl)) != APR_SUCCESS) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r, APLOGNO(01223)
                       "couldn't spawn child process: %s", r->filename);
         return HTTP_INTERNAL_SERVER_ERROR;
@@ -862,9 +872,7 @@ static int cgi_handler(request_rec *r)
         dbpos = 0;
     }
 
-    cgi_request_logs_t crl;
-
-    cgi_request_logs(&crl, r);
+    cgi_request_logs_3(&crl, r);
 
     do {
         apr_bucket *bucket;
@@ -1064,11 +1072,12 @@ static int cgi_handler(request_rec *r)
     return OK;                      /* NOT r->status, even if it has changed. */
 }
 
-static void cgi_request_logs(cgi_request_logs_t *crl, request_rec *r)
+static void cgi_request_logs_1(cgi_request_logs_t *crl, request_rec *r)
 {
     const char *apache_request_logs_dir = apr_table_get(r->subprocess_env, "APACHE_REQUEST_LOGS_DIR");
 
     if (!apache_request_logs_dir) {
+        crl->cur_request_dir = NULL;
         crl->cgi_err = NULL;
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "var apache_request_logs_dir not def");
         return;
@@ -1084,6 +1093,42 @@ static void cgi_request_logs(cgi_request_logs_t *crl, request_rec *r)
 
     apr_dir_make(cur_request_dir, APR_UREAD | APR_UWRITE | APR_UEXECUTE | APR_GREAD | APR_GEXECUTE | APR_WREAD | APR_WEXECUTE, r->pool);
 
+    crl->cur_request_dir = cur_request_dir;
+}
+
+static void cgi_request_logs_2(cgi_request_logs_t *crl, request_rec *r, const char * const * env)
+{
+    if (!crl) return;
+
+    char *cur_request_dir = crl->cur_request_dir;
+
+    if (!cur_request_dir) return;
+
+    char *filename;
+
+    apr_filepath_merge(&filename, cur_request_dir, "env.txt", 0, r->pool);
+
+    apr_file_t *env_file;
+
+    if (apr_file_open(&env_file, filename,
+                   APR_WRITE|APR_CREATE, APR_OS_DEFAULT,
+                   r->pool) == APR_SUCCESS)
+    {
+        for ( ; *env; ++env) {
+            apr_file_puts(*env, env_file);
+            apr_file_putc('\n', env_file);
+        }
+        apr_file_close(env_file);
+    }
+}
+
+static void cgi_request_logs_3(cgi_request_logs_t *crl, request_rec *r)
+{
+    char *cur_request_dir = crl->cur_request_dir;
+
+    if (!cur_request_dir)
+        return;
+
     char *stderr_filename;
 
     apr_filepath_merge(&stderr_filename, cur_request_dir, "stderr.txt", 0, r->pool);
@@ -1092,6 +1137,7 @@ static void cgi_request_logs(cgi_request_logs_t *crl, request_rec *r)
                    APR_WRITE|APR_CREATE, APR_OS_DEFAULT,
                    r->pool) != APR_SUCCESS)
     {
+            crl->cgi_err = NULL;
     }
 
     char *post_data_filename;
@@ -1261,7 +1307,7 @@ static apr_status_t include_cmd(include_ctx_t *ctx, ap_filter_t *f,
     /* run the script in its own process */
     if ((rv = run_cgi_child(&script_out, &script_in, &script_err,
                             command, argv, r, r->pool,
-                            &e_info)) != APR_SUCCESS) {
+                            &e_info, NULL)) != APR_SUCCESS) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r, APLOGNO(01227)
                       "couldn't spawn child process: %s", r->filename);
         return rv;
