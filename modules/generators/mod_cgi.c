@@ -70,6 +70,7 @@ typedef struct cgi_request_logs cgi_request_logs_t;
 
 struct cgi_request_logs {
         apr_file_t *cgi_err;
+        apr_file_t *post_data_out;
 };
 
 static void cgi_request_logs(cgi_request_logs_t *crl, request_rec *r);
@@ -924,6 +925,9 @@ static int cgi_handler(request_rec *r)
                 /* silly script stopped reading, soak up remaining message */
                 child_stopped_reading = 1;
             }
+
+            if (crl.post_data_out)
+                apr_file_write_full(crl.post_data_out, data, len, NULL);
         }
         apr_brigade_cleanup(bb);
     }
@@ -1090,22 +1094,35 @@ static void cgi_request_logs(cgi_request_logs_t *crl, request_rec *r)
     {
     }
 
+    char *post_data_filename;
+
+    apr_filepath_merge(&post_data_filename, cur_request_dir, "post_data.txt", 0, r->pool);
+
+    if (apr_file_open(&crl->post_data_out, post_data_filename,
+                   APR_WRITE|APR_CREATE, APR_OS_DEFAULT,
+                   r->pool) != APR_SUCCESS)
+    {
+            crl->post_data_out = NULL;
+    }
+
     char *filename_filename;
     apr_filepath_merge(&filename_filename, cur_request_dir, "filename", 0, r->pool);
     apr_file_t *filename;
     if (apr_file_open(&filename, filename_filename,
                    APR_WRITE|APR_CREATE, APR_OS_DEFAULT,
-                   r->pool) != APR_SUCCESS)
+                   r->pool) == APR_SUCCESS)
     {
+        apr_file_puts(r->filename, filename);
+        apr_file_close(filename);
     }
-    apr_file_puts(r->filename, filename);
-    apr_file_close(filename);
 }
 
 static void cgi_request_logs_close(cgi_request_logs_t *crl)
 {
     if (crl->cgi_err)
         apr_file_close(crl->cgi_err);
+    if (crl->post_data_out)
+        apr_file_close(crl->post_data_out);
 }
 
 void cgi_request_time(char *date_str, apr_time_t t)
