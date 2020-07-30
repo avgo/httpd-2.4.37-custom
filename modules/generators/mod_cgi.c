@@ -217,9 +217,6 @@ static int log_scripterror(request_rec *r, cgi_server_conf * conf, int ret,
 static apr_status_t log_script_err(request_rec *r,
                 apr_file_t *script_err, cgi_request_logs_t *crl)
 {
-    if (crl->cgi_err == NULL)
-        return APR_SUCCESS;
-
     char argsbuffer[HUGE_STRING_LEN];
     char *newline;
     apr_status_t rv;
@@ -227,7 +224,8 @@ static apr_status_t log_script_err(request_rec *r,
 
     while ((rv = apr_file_gets(argsbuffer, HUGE_STRING_LEN,
                                script_err)) == APR_SUCCESS) {
-        apr_file_puts(argsbuffer, crl->cgi_err);
+        if (crl->cgi_err != NULL)
+            apr_file_puts(argsbuffer, crl->cgi_err);
     }
 
     return rv;
@@ -1079,6 +1077,7 @@ static void cgi_request_logs_1(cgi_request_logs_t *crl, request_rec *r)
     if (!apache_request_logs_dir) {
         crl->cur_request_dir = NULL;
         crl->cgi_err = NULL;
+        crl->post_data_out = NULL;
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "var apache_request_logs_dir not def");
         return;
     }
